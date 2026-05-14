@@ -41,10 +41,10 @@ jobs:
           # Output both human-readable (logs) and SARIF (Code Scanning).
           output_format: cli,sarif
           output_file_path: console,checkov.sarif
-          # Soft-fail keeps Phase 0 findings visible without blocking pushes.
-          # Switch to false once intentional deviations are explicitly skipped
-          # via .checkov.yaml.
-          soft_fail: true
+          # Hard-fail now that .checkov.yaml lists every intentionally accepted
+          # finding. Any new finding either deserves a fix or an explicit skip
+          # entry in .checkov.yaml with a one-line rationale.
+          soft_fail: false
           quiet: true
 
       - name: Upload SARIF to GitHub Security

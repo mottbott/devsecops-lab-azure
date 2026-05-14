@@ -1,0 +1,29 @@
+# Checkov configuration — list of rules we deliberately accept for Phase 0.
+# Each skip carries a one-line rationale so re-evaluation in Phase 1 is easy.
+
+skip-check:
+  # ---- Phase 0 intentional deviations (public endpoints, lab SKUs) -----
+  - CKV_AZURE_139  # ACR public access — Phase 0 uses public endpoints
+  - CKV_AZURE_222  # App Service public access — same
+  - CKV_AZURE_211  # ASP "production suitable" — B1 is lab SKU
+  - CKV_AZURE_225  # ASP zone redundancy — Premium V3 only
+  - CKV_AZURE_233  # ACR zone redundancy — Premium ACR only
+  - CKV_AZURE_212  # App Service min instance for failover — single-instance lab
+  - CKV_AZURE_165  # ACR geo-replication — Phase 1+ topic
+
+  # ---- Phase 1 backlog (Defender for Containers, signed images) --------
+  - CKV_AZURE_163  # ACR vulnerability scanning (= Defender for Containers)
+  - CKV_AZURE_164  # ACR signed/trusted images (Content Trust)
+  - CKV_AZURE_166  # ACR image quarantine / verified marking
+  - CKV_AZURE_167  # ACR retention policy for untagged manifests
+
+  # ---- We use modern diagnostic settings instead of inline blocks ------
+  - CKV_AZURE_63   # HTTP logging — handled via azurerm_monitor_diagnostic_setting
+  - CKV_AZURE_65   # detailed error messages — same
+  - CKV_AZURE_66   # failed request tracing — same
+
+  # ---- Not applicable to our hello-world container -------------------
+  - CKV_AZURE_88   # App Service uses Azure Files — we run a container, no file share
+  - CKV_AZURE_13   # App Service Authentication — app is intentionally public
+  - CKV_AZURE_17   # Client Certificates required — same
+  - CKV_AZURE_237  # ACR dedicated data endpoints — not on Basic SKU

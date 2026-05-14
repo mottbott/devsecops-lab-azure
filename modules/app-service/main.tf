@@ -26,6 +26,7 @@ resource "azurerm_linux_web_app" "main" {
 
   site_config {
     always_on                         = true
+    http2_enabled                     = true
     minimum_tls_version               = "1.2"
     ftps_state                        = "Disabled"
     health_check_path                 = var.health_check_path
