@@ -1,0 +1,36 @@
+# Local Claude guide — intentionally not versioned
+CLAUDE.md
+
+# Terraform
+.terraform/
+.terraform.lock.hcl.backup
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+# Variable files may contain secrets — commit a *.tfvars.example instead
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
