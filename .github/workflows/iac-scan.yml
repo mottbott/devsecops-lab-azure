@@ -1,0 +1,57 @@
+# Workflow name — separate from ci-cd to keep concerns isolated.
+name: iac-scan
+
+# Triggers: only when Terraform files (or this workflow itself) change.
+# Avoids burning runtime on app-only commits.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.tf"
+      - "**/*.tfvars.example"
+      - ".github/workflows/iac-scan.yml"
+      - ".checkov.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/*.tf"
+      - "**/*.tfvars.example"
+      - ".github/workflows/iac-scan.yml"
+      - ".checkov.yaml"
+  # Allow manual runs via the Actions UI when needed.
+  workflow_dispatch:
+
+permissions:
+  contents: read           # checkout
+  security-events: write   # upload SARIF to Code Scanning
+
+jobs:
+  checkov:
+    name: checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov against Terraform
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          # Scan from repo root — Checkov walks into modules/ on its own.
+          directory: .
+          framework: terraform
+          # Output both human-readable (logs) and SARIF (Code Scanning).
+          output_format: cli,sarif
+          output_file_path: console,checkov.sarif
+          # Soft-fail keeps Phase 0 findings visible without blocking pushes.
+          # Switch to false once intentional deviations are explicitly skipped
+          # via .checkov.yaml.
+          soft_fail: true
+          quiet: true
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov.sarif
+          # Distinct category so Code Scanning keeps Checkov findings separated
+          # from Trivy and CodeQL.
+          category: checkov
