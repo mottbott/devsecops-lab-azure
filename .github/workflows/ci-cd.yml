@@ -1,93 +1,108 @@
+# Workflow name — appears in the Actions UI and in status checks.
 name: ci-cd
 
+# Triggers: every push to main AND every PR against main. PR runs can do
+# build/test/scan but NOT push-sign/deploy (gated via the `if:` below).
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
-# Serialize per ref. We do NOT cancel in-progress runs on main so consecutive
-# pushes still each get a deploy; PR runs serialize per PR ref.
+# Concurrency lock per ref: two runs on the same branch run sequentially, not
+# in parallel. `cancel-in-progress: false` → an in-flight deploy is NOT
+# cancelled; the next run waits. Prevents overlapping deploys.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# Minimal permissions at the workflow scope. Default is usually broader, so
+# narrow explicitly to least-privilege.
 permissions:
-  id-token: write          # OIDC token for Azure login (and Cosign keyless)
-  contents: read           # checkout
-  security-events: write   # upload Trivy SARIF to GitHub Security tab
-  actions: read
+  id-token: write          # OIDC JWT for azure/login and Cosign keyless
+  contents: read           # read the repo via checkout
+  security-events: write   # allow SARIF upload to Code Scanning
+  actions: read            # some actions read workflow metadata
 
+# Workflow-wide constants. Centralized so the image name and Python version
+# only have to be maintained in one place.
 env:
   IMAGE_NAME: devsecops-lab
   PYTHON_VERSION: "3.12"
 
 jobs:
-  # ---------------------------------------------------------------------
-  # build: produces the container image as an artifact for downstream jobs
-  # ---------------------------------------------------------------------
+  # =====================================================================
+  # build — builds the container image and stores it as an artifact so
+  # scan/push-sign reuse the same build.
+  # =====================================================================
   build:
     name: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest                        # GitHub-hosted runner (Ubuntu 24.04)
     outputs:
+      # Expose the tag for downstream jobs (= commit SHA).
       image-tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4                 # clone the repo onto the runner
         with:
-          fetch-depth: 0
+          fetch-depth: 0                          # full history (in case later steps need git context)
 
       - name: Resolve image tag
         id: tag
+        # Use the commit SHA as the tag → unique and traceable.
         run: echo "tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3       # enable BuildKit/Buildx (needed for multi-stage)
 
       - name: Build container image (multi-stage, non-root)
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./Dockerfile
+          context: .                              # build context = repo root
+          file: ./Dockerfile                      # explicit, robust against default-path drift
           tags: ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
-          load: true
-          push: false
-          provenance: false
+          load: true                              # load image into the local Docker daemon (not push yet)
+          push: false                             # actual push happens later in push-sign
+          provenance: false                       # disable SLSA provenance — the extra manifest confuses Trivy
 
       - name: Save image as tar
+        # Serialize the image to a tar — required by upload-artifact.
         run: docker save ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }} -o /tmp/image.tar
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4          # upload the tar; downstream jobs download it back
         with:
           name: container-image
           path: /tmp/image.tar
-          retention-days: 1
+          retention-days: 1                       # keep only 1 day → saves storage quota
 
-  # ---------------------------------------------------------------------
-  # test: pytest against the source (runs in parallel with build)
-  # ---------------------------------------------------------------------
+  # =====================================================================
+  # test — pytest against the source. Runs in parallel with build; it does
+  # not need the image.
+  # =====================================================================
   test:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4                 # source is enough, no image artifact needed
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+          cache: pip                              # reuse pip cache → faster reruns
 
       - name: Install with test extras
+        # Editable install + test extras (httpx, pytest).
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
 
-      - run: pytest
+      - run: pytest                               # default args come from pyproject.toml ([tool.pytest.ini_options])
 
-  # ---------------------------------------------------------------------
-  # scan: Trivy image scan, fail on HIGH+CRITICAL, upload SARIF
-  # ---------------------------------------------------------------------
+  # =====================================================================
+  # scan — Trivy against the built image. Fails on CRITICAL; SARIF goes to
+  # GitHub Code Scanning so findings stay visible even when the job is red.
+  # =====================================================================
   scan:
     name: scan
-    needs: build
+    needs: build                                  # needs the tar from build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -96,32 +111,33 @@ jobs:
           path: /tmp
 
       - name: Load image
-        run: docker load -i /tmp/image.tar
+        run: docker load -i /tmp/image.tar        # restore tar into the local daemon
 
       - name: Trivy scan (CRITICAL, fail on findings, ignore-unfixed)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image-tag }}
-          severity: CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-          vuln-type: os,library
-          format: sarif
+          severity: CRITICAL                      # only CRITICAL fails the job (Phase-0 pragmatism)
+          exit-code: "1"                          # turn the step red on findings
+          ignore-unfixed: true                    # ignore CVEs without an available fix
+          vuln-type: os,library                   # OS packages + language libs (incl. pip packages)
+          format: sarif                           # output format consumed by Code Scanning
           output: trivy-results.sarif
 
       - name: Upload SARIF to GitHub Security
-        if: always()
+        if: always()                              # run even when Trivy fails → keep findings visible
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
-          category: trivy
+          category: trivy                         # category in Security tab → separates multiple tools cleanly
 
-  # ---------------------------------------------------------------------
-  # push-sign: ACR push + Cosign keyless sign — main only (OIDC FIC subject)
-  # ---------------------------------------------------------------------
+  # =====================================================================
+  # push-sign — push the image to ACR and sign it with Cosign keyless.
+  # Main only, because the Federated Credential is bound to refs/heads/main.
+  # =====================================================================
   push-sign:
     name: push-sign
-    needs: [build, test, scan]
+    needs: [build, test, scan]                    # only after build+test+scan are green
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -134,13 +150,17 @@ jobs:
         run: docker load -i /tmp/image.tar
 
       - name: Azure login (OIDC)
+        # `permissions.id-token: write` plus the three secrets is enough — no client secret needed.
+        # azure/login presents the OIDC JWT to Entra; Entra validates against the FIC.
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}            # app registration `gh-oidc-devsecopslab-dev`
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}            # determines the Entra endpoint
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }} # default subscription for subsequent az calls
 
       - name: ACR login (no admin user, no PAT)
+        # `az acr login` exchanges the AAD login for a short-lived ACR refresh token —
+        # no admin user, no PAT.
         run: |
           ACR_NAME="${ACR_LOGIN_SERVER%.azurecr.io}"
           az acr login --name "$ACR_NAME"
@@ -148,6 +168,8 @@ jobs:
           ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
 
       - name: Tag and push image
+        # Add the ACR FQDN to the local image, then push.
+        # Two tags: commit SHA (unique) plus :latest (convenient default pointer).
         run: |
           SRC="${IMAGE_NAME}:${IMAGE_TAG}"
           REMOTE_SHA="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
@@ -161,9 +183,12 @@ jobs:
           IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
           ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@v3        # install Cosign on the runner
 
       - name: Sign image (Cosign keyless, public Rekor)
+        # Keyless signing uses a fresh OIDC JWT (`id-token: write` is enough).
+        # Fulcio issues a short-lived certificate; Rekor records the signature
+        # hash in the public transparency log.
         run: |
           cosign sign --yes "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
         env:
@@ -171,16 +196,18 @@ jobs:
           IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
           ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
 
-  # ---------------------------------------------------------------------
-  # deploy: update App Service container image + smoke test /healthz
-  # ---------------------------------------------------------------------
+  # =====================================================================
+  # deploy — switch the App Service to the new image tag and smoke-test /healthz.
+  # Main only.
+  # =====================================================================
   deploy:
     name: deploy
-    needs: [build, push-sign]
+    needs: [build, push-sign]                     # needs the image-tag from build and a successful push
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Azure login (OIDC)
+        # New job → new runner → fresh OIDC token → fresh AAD login.
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -188,6 +215,9 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Update App Service container image
+        # Set the `container-image-name` property → App Service pulls via its
+        # system-assigned MI (AcrPull role). Terraform's lifecycle.ignore_changes
+        # prevents `terraform plan` from reverting this value later.
         run: |
           az webapp config container set \
             --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -201,6 +231,8 @@ jobs:
           AZURE_APP_SERVICE_NAME: ${{ secrets.AZURE_APP_SERVICE_NAME }}
 
       - name: Restart App Service to force pull
+        # Restart forces a fresh pull instead of waiting for App Service to
+        # notice the tag change on its own.
         run: |
           az webapp restart \
             --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -210,6 +242,8 @@ jobs:
           AZURE_APP_SERVICE_NAME: ${{ secrets.AZURE_APP_SERVICE_NAME }}
 
       - name: Smoke test /healthz
+        # 30 attempts × 10s = 5 min tolerance for the App Service pull + container start.
+        # Only count the deploy as successful once /healthz actually returns 200.
         run: |
           APP_HOST="${AZURE_APP_SERVICE_NAME}.azurewebsites.net"
           for i in $(seq 1 30); do
