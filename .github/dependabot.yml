@@ -1,0 +1,52 @@
+version: 2
+
+updates:
+  # Python dependencies declared in pyproject.toml (root).
+  # Dependabot opens PRs for minor/patch bumps within the declared ranges,
+  # plus PRs for security-relevant updates (those go through automated
+  # security fixes — same channel).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: deps(python)
+
+  # GitHub Actions versions referenced in any .github/workflows/*.yml.
+  # Catches things like actions/checkout@v4 → @v5 once it lands.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: deps(actions)
+
+  # Container base image referenced in Dockerfile (python:3.12-slim).
+  # Updates the digest/tag when a newer slim image is published.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: deps(docker)
