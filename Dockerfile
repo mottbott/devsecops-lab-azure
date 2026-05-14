@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- Stage 1: builder ----------------------------------------------------
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /build
 
@@ -13,7 +13,7 @@ COPY app ./app
 RUN pip wheel --no-cache-dir --wheel-dir /wheels .
 
 # ---- Stage 2: runtime ----------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 RUN groupadd --system --gid 1001 app && \
     useradd  --system --uid 1001 --gid app --shell /usr/sbin/nologin app
