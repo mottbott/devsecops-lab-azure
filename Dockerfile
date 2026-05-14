@@ -21,7 +21,8 @@ RUN groupadd --system --gid 1001 app && \
 WORKDIR /app
 
 COPY --from=builder /wheels /tmp/wheels
-RUN pip install --no-cache-dir --no-index --find-links /tmp/wheels devsecops-lab && \
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --no-index --find-links /tmp/wheels devsecops-lab && \
     rm -rf /tmp/wheels /root/.cache
 
 USER app
