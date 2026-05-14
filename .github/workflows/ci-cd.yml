@@ -99,7 +99,7 @@ jobs:
         run: docker load -i /tmp/image.tar
 
       - name: Trivy scan (HIGH+CRITICAL, fail on findings, ignore-unfixed)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image-tag }}
           severity: HIGH,CRITICAL
