@@ -152,7 +152,7 @@ jobs:
       - name: Azure login (OIDC)
         # `permissions.id-token: write` plus the three secrets is enough — no client secret needed.
         # azure/login presents the OIDC JWT to Entra; Entra validates against the FIC.
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}            # app registration `gh-oidc-devsecopslab-dev`
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}            # determines the Entra endpoint
@@ -208,7 +208,7 @@ jobs:
     steps:
       - name: Azure login (OIDC)
         # New job → new runner → fresh OIDC token → fresh AAD login.
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
