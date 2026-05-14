@@ -1,0 +1,60 @@
+# Workflow-Name — eigener Workflow, damit der reine CI-Loop in ci-cd.yml
+# nicht durch die CodeQL-Analyse (mehrere Minuten) ausgebremst wird.
+name: codeql
+
+# Trigger: bei jedem Push/PR auf main + zusaetzlich woechentlich, damit auch
+# stehende Branches gegen neue CodeQL-Queries gescannt werden.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "16 3 * * 2"        # Dienstags 03:16 UTC
+
+jobs:
+  analyze:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    # Minimale Permissions.
+    permissions:
+      security-events: write    # SARIF an Code-Scanning hochladen
+      packages: read            # CodeQL-Query-Packs ggf. aus GitHub Packages ziehen
+      contents: read            # Source-Checkout
+      actions: read             # CodeQL liest Workflow-Metadaten
+
+    strategy:
+      fail-fast: false          # ein rotes Language-Result bricht andere nicht ab
+      matrix:
+        include:
+          # Python — eigentlicher App-Code (app/, tests/). Kein Build noetig,
+          # CodeQL parst direkt.
+          - language: python
+            build-mode: none
+          # Actions — scannt die Workflow-YAMLs selbst auf Risiken wie
+          # Script-Injection ueber `${{ github.event.* }}`-Inputs in `run:`-Bloecken.
+          - language: actions
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        # Engine + Sprache + Query-Pack einrichten. `build-mode: none`
+        # heisst: keine Compile-Schritte noetig (gilt fuer Python und Actions).
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Default-Query-Pack reicht fuer Phase 0. Wenn du strenger
+          # scannen willst: `queries: security-extended,security-and-quality`.
+          # queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        # Macht die eigentliche Analyse + lädt SARIF zu Code-Scanning hoch.
+        # Tool-Kategorie wird pro Sprache getrennt, damit Findings sauber
+        # zuzuordnen sind.
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
