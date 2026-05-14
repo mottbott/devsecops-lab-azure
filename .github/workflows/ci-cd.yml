@@ -1,0 +1,228 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Serialize per ref. We do NOT cancel in-progress runs on main so consecutive
+# pushes still each get a deploy; PR runs serialize per PR ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write          # OIDC token for Azure login (and Cosign keyless)
+  contents: read           # checkout
+  security-events: write   # upload Trivy SARIF to GitHub Security tab
+  actions: read
+
+env:
+  IMAGE_NAME: devsecops-lab
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ---------------------------------------------------------------------
+  # build: produces the container image as an artifact for downstream jobs
+  # ---------------------------------------------------------------------
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve image tag
+        id: tag
+        run: echo "tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build container image (multi-stage, non-root)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
+          load: true
+          push: false
+          provenance: false
+
+      - name: Save image as tar
+        run: docker save ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }} -o /tmp/image.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: container-image
+          path: /tmp/image.tar
+          retention-days: 1
+
+  # ---------------------------------------------------------------------
+  # test: pytest against the source (runs in parallel with build)
+  # ---------------------------------------------------------------------
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install with test extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - run: pytest
+
+  # ---------------------------------------------------------------------
+  # scan: Trivy image scan, fail on HIGH+CRITICAL, upload SARIF
+  # ---------------------------------------------------------------------
+  scan:
+    name: scan
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: container-image
+          path: /tmp
+
+      - name: Load image
+        run: docker load -i /tmp/image.tar
+
+      - name: Trivy scan (HIGH+CRITICAL, fail on findings, ignore-unfixed)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image-tag }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+  # ---------------------------------------------------------------------
+  # push-sign: ACR push + Cosign keyless sign — main only (OIDC FIC subject)
+  # ---------------------------------------------------------------------
+  push-sign:
+    name: push-sign
+    needs: [build, test, scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: container-image
+          path: /tmp
+
+      - name: Load image
+        run: docker load -i /tmp/image.tar
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login (no admin user, no PAT)
+        run: |
+          ACR_NAME="${ACR_LOGIN_SERVER%.azurecr.io}"
+          az acr login --name "$ACR_NAME"
+        env:
+          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+
+      - name: Tag and push image
+        run: |
+          SRC="${IMAGE_NAME}:${IMAGE_TAG}"
+          REMOTE_SHA="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+          REMOTE_LATEST="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:latest"
+          docker tag "$SRC" "$REMOTE_SHA"
+          docker tag "$SRC" "$REMOTE_LATEST"
+          docker push "$REMOTE_SHA"
+          docker push "$REMOTE_LATEST"
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (Cosign keyless, public Rekor)
+        run: |
+          cosign sign --yes "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+
+  # ---------------------------------------------------------------------
+  # deploy: update App Service container image + smoke test /healthz
+  # ---------------------------------------------------------------------
+  deploy:
+    name: deploy
+    needs: [build, push-sign]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update App Service container image
+        run: |
+          az webapp config container set \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_APP_SERVICE_NAME" \
+            --container-image-name "${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          AZURE_APP_SERVICE_NAME: ${{ secrets.AZURE_APP_SERVICE_NAME }}
+
+      - name: Restart App Service to force pull
+        run: |
+          az webapp restart \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_APP_SERVICE_NAME"
+        env:
+          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          AZURE_APP_SERVICE_NAME: ${{ secrets.AZURE_APP_SERVICE_NAME }}
+
+      - name: Smoke test /healthz
+        run: |
+          APP_HOST="${AZURE_APP_SERVICE_NAME}.azurewebsites.net"
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 "https://${APP_HOST}/healthz" > /tmp/healthz.json; then
+              echo "healthz OK on attempt $i:"
+              cat /tmp/healthz.json
+              echo
+              exit 0
+            fi
+            echo "attempt $i: not ready yet, sleeping 10s"
+            sleep 10
+          done
+          echo "healthz never returned 200 after 5 minutes" >&2
+          exit 1
+        env:
+          AZURE_APP_SERVICE_NAME: ${{ secrets.AZURE_APP_SERVICE_NAME }}

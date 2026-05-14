@@ -1,0 +1,7 @@
+# Default owner for everything in the repo.
+* @mottbott
+
+# Sensitive areas — same owner today, but explicit entries serve as
+# attention markers if a co-maintainer is added later.
+/.github/workflows/   @mottbott
+/modules/identity/    @mottbott
