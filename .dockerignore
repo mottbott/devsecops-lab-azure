@@ -1,0 +1,40 @@
+# VCS + editor + OS
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Claude / docs / state
+CLAUDE.md
+docs
+
+# Terraform
+.terraform
+.terraform.lock.hcl
+modules
+*.tf
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.example
+*.tfplan
+crash.*.log
+
+# Python local artifacts
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.venv
+venv
+*.egg-info
+
+# Tests are not shipped in the runtime image
+tests
+
+# Env / secrets
+.env
+.env.*
