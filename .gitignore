@@ -1,6 +1,9 @@
 # Local Claude guide — intentionally not versioned
 CLAUDE.md
 
+# Solution Brief — local working document, not public in the repo
+docs/solution-brief.md
+
 # Terraform
 .terraform/
 .terraform.lock.hcl.backup
