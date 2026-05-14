@@ -1,8 +1,8 @@
 # Local Claude guide — intentionally not versioned
 CLAUDE.md
 
-# Solution Brief — local working document, not public in the repo
-docs/solution-brief.md
+# Working docs — all of docs/ is local-only, never check in
+docs/
 
 # Terraform
 .terraform/
@@ -10,6 +10,8 @@ docs/solution-brief.md
 *.tfstate
 *.tfstate.*
 *.tfplan
+tf.plan
+tf-apply.log
 crash.log
 crash.*.log
 # Variable files may contain secrets — commit a *.tfvars.example instead
@@ -27,10 +29,13 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# Environment / secrets
+# Environment / secrets — both dotfile and non-dotfile names
 .env
 .env.*
+env
+env.*
 !.env.example
+!env.example
 
 # Editor / OS
 .vscode/
