@@ -40,3 +40,8 @@ output "log_analytics_workspace_id" {
   description = "Resource ID of the Log Analytics workspace. Useful for ad-hoc KQL queries from the Portal."
   value       = module.monitoring.workspace_id
 }
+
+output "key_vault_uri" {
+  description = "Key Vault URI. The App Service reads the demo secret from here via its managed identity."
+  value       = module.keyvault.vault_uri
+}
